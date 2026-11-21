@@ -1,29 +1,33 @@
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.PrintWriter;
-import java.net.ServerSocket;
-import java.net.Socket;
+import java.io.*;
+import java.net.*;
+import java.util.*;
 
 public class ServidorChat {
     private static final int PUERTO = 59420;
+    // Mapa para guardar: nombreUsuario -> canal de salida hacia ese cliente
+    private static Map<String, PrintWriter> clientes = new HashMap<>();
 
     public static void main(String[] args) {
         System.out.println("Servidor iniciado y contestando OK");
 
-        try (ServerSocket servidorSocket = new ServerSocket(PUERTO)) {
+        try (ServerSocket servidor = new ServerSocket(PUERTO)) {
             while (true) {
-                Socket socketCliente = servidorSocket.accept();
-                new Thread(new ManejadorCliente(socketCliente)).start();
+                Socket socket = servidor.accept();
+                new Thread(new ManejadorCliente(socket)).start();
             }
         } catch (IOException e) {
-            System.err.println("Error en el servidor: " + e.getMessage());
+            System.out.println("Error en el servidor: " + e.getMessage());
         }
+    }
+
+    // Muestra en la consola del servidor quiénes están conectados actualmente
+    private static synchronized void mostrarConectados() {
+        System.out.println("Usuarios conectados actualmente: " + clientes.keySet());
     }
 
     private static class ManejadorCliente implements Runnable {
         private Socket socket;
-        private String nombreUsuario;
+        private String usuario;
 
         public ManejadorCliente(Socket socket) {
             this.socket = socket;
@@ -35,25 +39,51 @@ public class ServidorChat {
                     BufferedReader entrada = new BufferedReader(new InputStreamReader(socket.getInputStream()));
                     PrintWriter salida = new PrintWriter(socket.getOutputStream(), true)
             ) {
-                nombreUsuario = entrada.readLine();
-                System.out.println("Usuario \"" + nombreUsuario + "\" conectado");
+                // 1. Recibir nombre del usuario y guardarlo
+                usuario = entrada.readLine();
+                synchronized (clientes) {
+                    clientes.put(usuario, salida);
+                }
+                System.out.println("Usuario \"" + usuario + "\" conectado");
+                mostrarConectados();
 
-                String mensaje;
-                while ((mensaje = entrada.readLine()) != null) {
-                    if (mensaje.equalsIgnoreCase("chao")) {
-                        System.out.println("El usuario \"" + nombreUsuario + "\" abandonó");
+                // 2. Bucle para leer destinatario y mensaje
+                while (true) {
+                    // Enviar lista actual al cliente para que sepa a quién escribirle
+                    salida.println("Conectados: " + clientes.keySet());
+
+                    String destinatario = entrada.readLine();
+                    if (destinatario == null || destinatario.equalsIgnoreCase("chao")) {
                         break;
                     }
-                    System.out.println(nombreUsuario + "--> " + mensaje);
+
+                    String mensaje = entrada.readLine();
+                    if (mensaje == null || mensaje.equalsIgnoreCase("chao")) {
+                        break;
+                    }
+
+                    // 3. Buscar al destinatario y reenviarle el mensaje
+                    PrintWriter salidaDestino = clientes.get(destinatario);
+                    if (salidaDestino != null) {
+                        salidaDestino.println("\n[Mensaje de " + usuario + "]: " + mensaje);
+                        salida.println("-> Enviado a " + destinatario);
+                        System.out.println(usuario + " -> " + destinatario + ": " + mensaje);
+                    } else {
+                        salida.println("-> El usuario \"" + destinatario + "\" no existe o no está conectado.");
+                    }
                 }
             } catch (IOException e) {
-                System.out.println("Conexión interrumpida con el usuario.");
+                System.out.println("Se perdió conexión con " + usuario);
             } finally {
-                try {
-                    socket.close();
-                } catch (IOException e) {
-                    e.printStackTrace();
+                // 4. Eliminar de la lista cuando salga
+                if (usuario != null) {
+                    synchronized (clientes) {
+                        clientes.remove(usuario);
+                    }
+                    System.out.println("El usuario \"" + usuario + "\" abandonó");
+                    mostrarConectados();
                 }
+                try { socket.close(); } catch (IOException e) {}
             }
         }
     }
